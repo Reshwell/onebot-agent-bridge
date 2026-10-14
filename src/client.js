@@ -11,7 +11,8 @@ export async function rpc(config, method, params = {}) {
       method: "POST", redirect: "error",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${config.bridgeToken}` },
       body: JSON.stringify({ method, params }),
-      signal: AbortSignal.timeout(Math.max(config.apiTimeoutMs + 5000, Number(params.waitMs ?? 0) + 5000)),
+      signal: AbortSignal.timeout(Math.max(config.apiTimeoutMs + 5000, Number(params.waitMs ?? 0) + 5000,
+        method === "getImage" ? config.apiTimeoutMs + (config.imageTimeoutMs ?? 15000) + 5000 : 0)),
     });
   } catch {
     throw new BridgeError("BRIDGE_UNREACHABLE", "Cannot reach the bridge daemon. Check that qbridge serve is running and QBRIDGE_URL is correct. A send may have reached the daemon; retry only with the same requestId.", 503);

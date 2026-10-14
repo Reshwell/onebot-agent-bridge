@@ -7,6 +7,7 @@ import { loadConfig } from "../src/config.js";
 
 export const token = "test-bridge-token-0123456789";
 export const backendToken = "test-onebot-token";
+export const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jK1sAAAAASUVORK5CYII=", "base64");
 
 export async function setupConfig(t, override = {}) {
   const dir = await mkdtemp(join(tmpdir(), "qbridge-test-"));
@@ -15,6 +16,7 @@ export async function setupConfig(t, override = {}) {
     QBRIDGE_TOKEN: token, QBRIDGE_HOST: "127.0.0.1", QBRIDGE_PORT: "0",
     QBRIDGE_STATE_DIR: join(dir, "data"), QBRIDGE_FILE_ROOT: join(dir, "shared"),
     ONEBOT_ACCESS_TOKEN: backendToken,
+    QBRIDGE_GROUP_MENTION_ONLY: "false",
   }, dir), ...override };
 }
 
@@ -42,7 +44,7 @@ export function respond(packet) {
 export async function mockWS(t) {
   const wss = new WebSocketServer({ host: "127.0.0.1", port: 0 });
   await new Promise((resolve) => wss.once("listening", resolve));
-  const calls = [], headers = [], sockets = [];
+  const calls = [], headers = [], sockets = [], images = new Map();
   let ignore = false;
   wss.on("connection", (socket, request) => {
     sockets.push(socket);
@@ -51,13 +53,16 @@ export async function mockWS(t) {
       const packet = JSON.parse(bytes.toString());
       calls.push(packet);
       if (ignore && packet.action.startsWith("send_")) return;
-      socket.send(JSON.stringify(respond(packet)));
+      const response = respond(packet);
+      if (packet.action === "get_image" && images.has(packet.params.file)) response.data = images.get(packet.params.file);
+      socket.send(JSON.stringify(response));
     });
   });
   t.after(async () => { for (const socket of wss.clients) socket.terminate(); await new Promise((resolve) => wss.close(resolve)); });
   return {
     url: `ws://127.0.0.1:${wss.address().port}/`, wss, calls, headers, sockets,
     ignoreSends() { ignore = true; },
+    imageInfo(file, data) { images.set(file, data); },
     emit(event) { for (const socket of wss.clients) socket.send(JSON.stringify(event)); },
   };
 }

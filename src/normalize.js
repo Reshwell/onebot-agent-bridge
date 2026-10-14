@@ -69,3 +69,10 @@ export function acceptsMessage(message, config) {
   }
   return true;
 }
+
+// Other speakers in an allowed group are background, not new AI tasks.
+export function retainsMessage(message, config) {
+  if (!message) return false;
+  if (message.groupId) return !config.allowedGroups.size || config.allowedGroups.has(message.groupId);
+  return !config.allowedUsers.size || config.allowedUsers.has(message.userId);
+}

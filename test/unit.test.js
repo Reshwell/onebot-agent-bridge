@@ -63,6 +63,10 @@ test("config rejects invalid transport/token combinations and preserves env prec
   const parsed = loadConfig({ QBRIDGE_PORT: "2222" }, dir);
   assert.equal(parsed.port, 2222);
   assert.equal(parsed.groupMentionOnly, true);
+  assert.throws(() => loadConfig({ QBRIDGE_GROUP_CONTEXT_LIMIT: "101" }), /QBRIDGE_GROUP_CONTEXT_LIMIT/);
+  assert.throws(() => loadConfig({ QBRIDGE_IMAGE_ALLOWED_HOSTS: "https://qq.com/images" }), /QBRIDGE_IMAGE_ALLOWED_HOSTS/);
+  assert.throws(() => loadConfig({ QBRIDGE_IMAGE_ALLOW_PRIVATE_NETWORK: "yes" }), /QBRIDGE_IMAGE_ALLOW_PRIVATE_NETWORK/);
+  assert.equal(loadConfig({ QBRIDGE_IMAGE_LOCAL_ROOT: config.fileRoot, ONEBOT_IMAGE_LOCAL_ROOT: "" }).onebotImageLocalRoot, config.fileRoot);
 });
 
 test("SQLite keeps pending events across restart, deduplicates and retains acknowledged history", async (t) => {

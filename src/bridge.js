@@ -2,8 +2,9 @@ import { createHash, randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
 import { mkdir, open, realpath } from "node:fs/promises";
 import { basename, isAbsolute, relative, resolve, sep } from "node:path";
-import { acceptsMessage, normalizeMessage } from "./normalize.js";
+import { acceptsMessage, retainsMessage, normalizeMessage, segmentsOf } from "./normalize.js";
 import { BridgeError, failure, id, integer } from "./errors.js";
+import { imageMime, readImage } from "./images.js";
 
 export function targetOf(args) {
   let userId = args.userId;
@@ -20,14 +21,6 @@ export function targetOf(args) {
   return { kind, targetId, conversationId: `${kind}:${targetId}`, params: { [kind === "group" ? "group_id" : "user_id"]: Number(targetId) } };
 }
 
-function imageMime(bytes) {
-  if (bytes.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))) return "image/png";
-  if (bytes[0] === 255 && bytes[1] === 216 && bytes[2] === 255) return "image/jpeg";
-  if (["GIF87a", "GIF89a"].includes(bytes.subarray(0, 6).toString())) return "image/gif";
-  if (bytes.subarray(0, 4).toString() === "RIFF" && bytes.subarray(8, 12).toString() === "WEBP") return "image/webp";
-  return null;
-}
-
 export class Bridge extends EventEmitter {
   constructor(config, store, onebot) {
     super();
@@ -40,6 +33,7 @@ export class Bridge extends EventEmitter {
     this.loginRequest = null;
     this.closed = false;
     if (config.selfId) this.pin(config.selfId);
+    store.reclassifyGroups((message) => acceptsMessage(message, config));
     onebot.on("event", (event) => {
       try { this.ingest(event); } catch (error) { this.lastIngressError = failure(error).error.code; }
     });
@@ -82,11 +76,12 @@ export class Bridge extends EventEmitter {
     if (event.self_id !== undefined) this.pin(event.self_id);
     if (event.post_type === "meta_event") return { accepted: false, reason: "meta_event" };
     const message = normalizeMessage(event);
-    if (!acceptsMessage(message, this.config)) return { accepted: false, reason: "filtered_or_unsupported" };
-    const seq = this.store.insert(message, event);
+    if (!retainsMessage(message, this.config)) return { accepted: false, reason: "filtered_or_unsupported" };
+    const pending = acceptsMessage(message, this.config);
+    const seq = this.store.insert(message, event, { pending });
     this.lastIngressError = null;
-    if (seq !== null) this.emit("message", message.conversationId);
-    return { accepted: seq !== null, ...(seq !== null ? { seq } : { reason: "duplicate" }) };
+    if (seq !== null && pending) this.emit("message", message.conversationId);
+    return { accepted: seq !== null, ...(seq !== null ? { seq, pending, contextOnly: !pending } : { reason: "duplicate" }) };
   }
 
   async fetchMessages(args = {}) {
@@ -103,7 +98,29 @@ export class Bridge extends EventEmitter {
       });
       messages = this.store.pending(args);
     }
-    return { messages, ackIds: messages.map((message) => message.seq), ...this.store.counts(), delivery: "at-least-once; call ackMessages after processing" };
+    messages = messages.map((message) => message.groupId ? { ...message, context: this.store.context(message, this.config.groupContextLimit) } : message);
+    return { messages, ackIds: messages.map((message) => message.seq), ...this.store.counts(), delivery: "at-least-once; call ackMessages after processing; context entries are background only" };
+  }
+
+  async getImage(args) {
+    const { message, raw } = this.store.incoming(args.seq);
+    if (!retainsMessage(message, this.config)) throw new BridgeError("TARGET_NOT_ALLOWED", "That message is outside the current conversation allowlist.", 403);
+    const attachmentIndex = integer(args.attachmentIndex ?? 0, "attachmentIndex", 0, 10000);
+    const attachment = message.attachments?.[attachmentIndex];
+    if (attachment?.kind !== "image") throw new BridgeError("IMAGE_NOT_FOUND", "That attachment is not an image.", 404);
+    const segment = segmentsOf(raw.message ?? raw.raw_message)[attachment.segmentIndex];
+    if (segment?.type !== "image") throw new BridgeError("IMAGE_NOT_FOUND", "The retained message has no matching image segment.", 404);
+    let info;
+    const file = String(segment.data.file_id || segment.data.file || "");
+    // Refresh expiring QQ CDN URLs via get_image when an opaque file ID exists.
+    if (file && file.length <= 4096 && !/^(?:https?:|file:|base64:|data:|\/|[a-z]:[\\/])/i.test(file)) {
+      try { await this.ensureAccount(); info = await this.onebot.call("get_image", { file }); }
+      catch (error) {
+        if (error.code === "ACCOUNT_MISMATCH") throw error;
+        // Direct image bytes / event URL can still work while API is offline.
+      }
+    }
+    return { seq: message.seq, attachmentIndex, conversationId: message.conversationId, messageId: message.messageId, ...await readImage(segment.data, info, this.config) };
   }
 
   async localFile(filePath) {
@@ -202,6 +219,7 @@ export class Bridge extends EventEmitter {
       case "ackMessages": return this.store.ack(args.ids);
       case "listConversations": return { conversations: this.store.conversations() };
       case "history": return { messages: this.store.history(args) };
+      case "getImage": return this.getImage(args);
       case "listUsers": await this.ensureAccount(); return { users: await this.onebot.call("get_friend_list") };
       case "listGroups": await this.ensureAccount(); return { groups: await this.onebot.call("get_group_list") };
       case "sendText": return this.send("text", args);

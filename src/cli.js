@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 import { randomUUID } from "node:crypto";
+import { writeFile } from "node:fs/promises";
+import { resolve } from "node:path";
 import { loadConfig } from "./config.js";
 import { rpc } from "./client.js";
 import { BridgeError, failure } from "./errors.js";
@@ -12,6 +14,7 @@ const help = `OneBot Agent Bridge (Node.js 24+)
   qbridge ack --ids 1,2,3
   qbridge conversations
   qbridge history [--conversation group:456] [--limit 20] [--before 50]
+  qbridge image --seq 17 [--attachment 0] [--output ./photo.png]
   qbridge users
   qbridge groups
   qbridge send --user 123 --text "hello" [--request-id unique-id]
@@ -24,6 +27,7 @@ Configuration: .env / environment. QBRIDGE_TOKEN must match the daemon.
 All client commands output JSON. fetch does not acknowledge messages.
 Images/files must be inside the daemon's QBRIDGE_FILE_ROOT.
 File uploads require backend extensions and a shared path with OneBot.
+image --output saves an incoming image on THIS client without overwriting.
 OneBot events require a continuously running daemon; a fetch command
 cannot recover messages sent while the daemon was disconnected.
 `;
@@ -77,6 +81,11 @@ async function main() {
     if (options["--wait"] !== undefined) params.waitMs = options["--wait"];
     if (options["--before"] !== undefined) params.before = options["--before"];
     if (options["--conversation"] !== undefined) params.conversationId = options["--conversation"];
+  } else if (command === "image") {
+    only(options, ["--seq", "--attachment", "--output"]);
+    method = "getImage";
+    params.seq = options["--seq"];
+    if (options["--attachment"] !== undefined) params.attachmentIndex = options["--attachment"];
   } else if (command === "ack") {
     only(options, ["--ids"]);
     method = "ackMessages";
@@ -110,6 +119,14 @@ async function main() {
     process.stderr.write(`requestId=${params.requestId}\n`);
   } else throw new BridgeError("INVALID_ARGUMENT", "Unknown command. Run qbridge help.");
   const data = await rpc(config, method, params);
+  if (method === "getImage" && options["--output"] !== undefined) {
+    const filePath = resolve(options["--output"]);
+    try { await writeFile(filePath, Buffer.from(data.base64, "base64"), { flag: "wx", mode: 0o600 }); }
+    catch (error) { throw new BridgeError(error.code === "EEXIST" ? "OUTPUT_FILE_EXISTS" : "OUTPUT_FILE_UNAVAILABLE", "Cannot save image. Choose a new path in an existing writable directory; existing files are not overwritten."); }
+    const { base64, ...metadata } = data;
+    process.stdout.write(`${JSON.stringify({ ok: true, data: { ...metadata, filePath } }, null, 2)}\n`);
+    return;
+  }
   process.stdout.write(`${JSON.stringify({ ok: true, data }, null, 2)}\n`);
 }
 

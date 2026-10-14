@@ -1,6 +1,6 @@
 {
   "name": "onebot-agent-bridge",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "description": "Persistent OneBot v11 QQ bridge with CLI and stdio MCP tools",

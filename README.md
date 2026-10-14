@@ -25,10 +25,12 @@ QQ ↔ NapCat / SnowLuma ↔ OneBot v11 ↔ qbridge 常驻进程
 | HTTP API + HTTP POST 事件 | 已实现，支持 HMAC-SHA1 签名验证 |
 | QQ 私聊 / 群聊收发文本 | 已实现 |
 | CQ 字符串 / 数组格式入站消息 | 已实现 |
-| @ / 引用回复 / 群聊只处理 @bot | 已实现 |
+| @ / 引用回复 / 群聊只处理 @bot | 已实现；默认只 @ 触发，普通消息仅作上下文 |
+| 被 @ 时附带最近群聊上下文 | 已实现；默认此前 20 条，可配置 0–100 |
 | 标准 OneBot 图片发送 | 已实现，本地图片转 base64 |
 | 文件发送 | 扩展接口；要求后端支持和共享路径 |
-| 入站图片、语音、视频、文件 | 首版仅返回类型和元数据，不下载 / 转写 |
+| 入站图片 | 已实现按引用读取；MCP 原生图片 / CLI 保存图片 / HTTP base64 |
+| 入站语音、视频、文件 | 仅返回类型和元数据，不下载 / 转写 |
 | 本地消息历史、去重、处理确认 | 已实现，SQLite 持久化 |
 | 发送 requestId 去重 | 已实现；无法确认的发送不会自动补发 |
 | CLI / stdio MCP / JSON HTTP | 已实现 |
@@ -164,7 +166,7 @@ Compose 默认只把端口映射到宿主机回环地址。来自其他容器的
 
 具体导入方式由你的 MCP 客户端决定。这里只提供通用 stdio 配置，不保证每个 AI 产品都允许本地 stdio MCP 或后台自动轮询。
 
-工具包括 `fetchMessages`、`ackMessages`、`sendText`、`sendImage`、`sendFile`、`listUsers`、`listGroups`、`listConversations`、`history`、`status`、`getDelivery`。
+工具包括 `fetchMessages`、`getImage`、`ackMessages`、`sendText`、`sendImage`、`sendFile`、`listUsers`、`listGroups`、`listConversations`、`history`、`status`、`getDelivery`。
 
 ## 消息处理与防重复
 
@@ -196,9 +198,62 @@ Compose 默认只把端口映射到宿主机回环地址。来自其他容器的
 
 同一消息队列默认面向一个消费循环；多个 Agent 同时读取会得到相同未确认消息，首版没有消费者租约。已确认及发送历史最多保留 `QBRIDGE_MAX_HISTORY` 条；未确认消息不会被这个上限清理。去重键和发送记录持续保留，需要为长期运行的状态目录预留磁盘空间。
 
+## 群聊：只 @ 触发，同时保留上下文
+
+默认配置：
+
+```dotenv
+QBRIDGE_GROUP_MENTION_ONLY=true
+QBRIDGE_GROUP_CONTEXT_LIMIT=20
+```
+
+普通群消息保存在有界历史中，`contextOnly: true`、`pending: false`，不进入待处理队列，也不会结束 `fetch --wait` 的等待。明确 `@` 当前 QQ 机器人的消息才会进入群聊待处理队列；`@all` 不算 `@bot`。私聊不受这个开关影响。
+
+查询到群聊任务时，`messages[i].context` 会自动附带**该条 @ 消息之前、同一群聊**的最近 20 条消息（含本桥接器的已发送回复），按接收顺序排列。后续群聊不会混入这条任务的上下文，其他群也不会串入。`QBRIDGE_GROUP_CONTEXT_LIMIT` 可设 0–100，0 表示不附带上下文。正文和图片都可作为背景，但上下文不是新的回复任务，也不在本轮 `ackIds` 中。
+
+`QBRIDGE_ALLOWED_GROUPS` 限定保存哪些群的消息；为完整上下文，这些群内其他发言者的消息也会保存为背景。`QBRIDGE_ALLOWED_USERS` 限定允许触发处理的发言者和私聊对象，不再阻止保留允许群内的其他发言者背景。建议部署时填写群白名单，避免收集无关群聊。
+
+从 0.1.0 升级时，若旧 `.env` 写了 `QBRIDGE_GROUP_MENTION_ONLY=false`，必须改为 `true`；环境变量也可覆盖 `.env`。启动后，旧队列中不符合当前触发规则的普通群消息会降为上下文，保留历史而不继续作为任务。
+
+桥接器只区分“待处理消息”和“背景”，不控制 Muse 的调度器。两分钟定时任务仍会按时运行；这一轮没有私聊或 @ 消息时，应安静结束，不因普通群聊发通知或自动回复。
+
 OneBot v11 的事件没有可靠历史回放协议。桥接器离线期间的 QQ 消息、已经发出但未写入 SQLite 就断电的事件，不保证补齐。这个桥接器提供收到并落盘后的本地持久化，不承诺端到端恰好一次投递。
 
 ## 图片和文件
+
+### 接收图片并让 AI 看图
+
+`fetchMessages`、`history` 和群聊 `context` 中的图片附件会提供 `imageRef`，例如：
+
+```json
+{"kind":"image","segmentIndex":1,"imageRef":{"seq":17,"attachmentIndex":0}}
+```
+
+- **MCP**：调用 `getImage({ seq: 17, attachmentIndex: 0 })`，返回文字元数据 + 原生 MCP `image` 内容。客户端必须支持把图片交给有视觉能力的模型。
+- **CLI / Muse Computer**：执行下面的命令，把图片保存在消费端，再使用 Computer 的图片查看能力打开；不是让 AI 阅读一大段 base64。
+- **HTTP**：`POST /rpc`，请求 `{"method":"getImage","params":{"seq":17,"attachmentIndex":0}}`，返回 `mimeType`、`bytes`、`sha256` 和 `base64`；应用需要将实际图片作为视觉输入交给模型。
+
+```bash
+mkdir -p work
+node src/cli.js image --seq 17 --attachment 0 --output work/incoming-17.png
+```
+
+`seq` 和 `attachmentIndex` 应使用 `imageRef` 的实际值。CLI 输出保存后的绝对路径，已有文件不会被覆盖。读取图片不会自动确认消息；看图和回复完成后再 `ack`。桥接器不会自己生成图片描述或 OCR，也不能让纯文本模型拥有视觉能力。
+
+读取时优先用 `get_image` 刷新后端图片信息，再使用 base64、QQ CDN 下载链接或明确配置的共享图片缓存。临时签名链接、后端文件路径不会在查询结果中返回。默认接受 PNG/JPEG/GIF/WebP，单张上限由 `QBRIDGE_MAX_MEDIA_BYTES` 控制（默认 10 MiB）；网页、JSON、SVG 和超大内容会被拒绝。
+
+下载只允许 `QBRIDGE_IMAGE_ALLOWED_HOSTS` 指定的域名及其子域（默认 QQ 图片 CDN）；每次重定向和实际 DNS 地址均校验，默认拒绝回环、内网和保留地址，不携带 OneBot token、桥接 token 或 Cookie。仅对明确可信的 LAN 图片服务同时配置允许域名及 `QBRIDGE_IMAGE_ALLOW_PRIVATE_NETWORK=true`；不要为普通 QQ 图片关闭内网保护。
+
+若后端仅返回本地文件路径（OneBot 标准允许这种情况），需要共享图片缓存目录并设置：
+
+```dotenv
+QBRIDGE_IMAGE_LOCAL_ROOT=/read-only-qq-images
+ONEBOT_IMAGE_LOCAL_ROOT=/backend/cache/images
+```
+
+这是目录映射：后端 `/backend/cache/images/a.png` 对应桥接器 `/read-only-qq-images/a.png`。应只读挂载具体的图片缓存，不要配置成 `/` 或包含凭证的目录；越界路径和跳出目录的符号链接会被拒绝。SnowLuma 提供可用 URL 时通常不需要目录共享。
+
+### 发送图片和文件
 
 图片放进 `shared/` 后发送，协议端无需访问桥接器本地路径，因为桥接器会转成 base64：
 

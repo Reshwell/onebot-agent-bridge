@@ -54,16 +54,51 @@ export class Store {
     this.db.prepare("DELETE FROM messages WHERE pending = 0 AND seq NOT IN (SELECT seq FROM messages WHERE pending = 0 ORDER BY seq DESC LIMIT ?)").run(this.maxHistory);
   }
 
-  insert(message, raw) {
+  insert(message, raw, { pending = true } = {}) {
     return this.transaction(() => {
       if (this.db.prepare("INSERT OR IGNORE INTO seen(key) VALUES (?)").run(message.key).changes === 0) return null;
-      const row = this.db.prepare("INSERT INTO messages(key, conversation, pending, json, raw) VALUES (?, ?, 1, ?, ?)").run(message.key, message.conversationId, JSON.stringify(message), JSON.stringify(raw));
+      const row = this.db.prepare("INSERT INTO messages(key, conversation, pending, json, raw) VALUES (?, ?, ?, ?, ?)").run(message.key, message.conversationId, pending ? 1 : 0, JSON.stringify({ ...message, contextOnly: !pending }), JSON.stringify(raw));
       this.trim();
       return Number(row.lastInsertRowid);
     });
   }
 
-  publicRow(row) { return { ...JSON.parse(row.json), seq: row.seq, pending: Boolean(row.pending) }; }
+  publicRow(row) {
+    const message = JSON.parse(row.json);
+    if (message.attachments) message.attachments = message.attachments.map((attachment, attachmentIndex) => ({
+      ...attachment,
+      ...(attachment.kind === "image" ? { imageRef: { seq: row.seq, attachmentIndex } } : {}),
+    }));
+    return { ...message, seq: row.seq, pending: Boolean(row.pending) };
+  }
+
+  incoming(seq) {
+    seq = integer(seq, "seq", 1);
+    const row = this.db.prepare("SELECT * FROM messages WHERE seq = ? AND raw IS NOT NULL").get(seq);
+    if (!row) throw new BridgeError("MESSAGE_NOT_FOUND", "That incoming message is not in retained history.", 404);
+    return { message: this.publicRow(row), raw: JSON.parse(row.raw) };
+  }
+
+  context(message, limit) {
+    limit = integer(limit, "context limit", 0, 100);
+    if (!message.groupId || !limit) return [];
+    return this.db.prepare("SELECT * FROM messages WHERE conversation = ? AND seq < ? ORDER BY seq DESC LIMIT ?")
+      .all(message.conversationId, message.seq, limit).reverse()
+      .map((row) => ({ ...this.publicRow(row), pending: false, contextOnly: true }));
+  }
+
+  reclassifyGroups(shouldTrigger) {
+    this.transaction(() => {
+      const rows = this.db.prepare("SELECT * FROM messages WHERE pending = 1 AND json_extract(json, '$.groupId') IS NOT NULL").all();
+      for (const row of rows) {
+        if (!shouldTrigger(this.publicRow(row))) {
+          const json = { ...JSON.parse(row.json), contextOnly: true };
+          this.db.prepare("UPDATE messages SET pending = 0, json = ? WHERE seq = ?").run(JSON.stringify(json), row.seq);
+        }
+      }
+      this.trim();
+    });
+  }
 
   pending({ limit = 20, conversationId } = {}) {
     limit = integer(limit, "limit", 1, 100);

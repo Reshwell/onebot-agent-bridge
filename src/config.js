@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { parseEnv } from "node:util";
+import { isIP } from "node:net";
 import { BridgeError, bool, id, integer } from "./errors.js";
 
 function url(value, name, protocols) {
@@ -23,6 +24,11 @@ export function loadConfig(env = process.env, cwd = process.cwd()) {
   if (!["forward", "reverse", "http"].includes(mode)) throw new BridgeError("INVALID_CONFIG", "ONEBOT_MODE must be forward, reverse or http.");
   const list = (name) => new Set(get(name).split(",").map((entry) => entry.trim()).filter(Boolean).map((entry) => id(entry, name)));
   const fileRoot = resolve(cwd, get("QBRIDGE_FILE_ROOT", "./shared"));
+  const imageHosts = get("QBRIDGE_IMAGE_ALLOWED_HOSTS", "qpic.cn,multimedia.nt.qq.com,multimedia.nt.qq.com.cn").split(",").map((entry) => entry.trim().toLowerCase()).filter(Boolean);
+  if (imageHosts.some((host) => !isIP(host) && host !== "localhost" && !/^(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z0-9-]+$/.test(host))) {
+    throw new BridgeError("INVALID_CONFIG", "QBRIDGE_IMAGE_ALLOWED_HOSTS must contain hostnames or IP addresses, not URLs or wildcards.");
+  }
+  const imageLocalRoot = get("QBRIDGE_IMAGE_LOCAL_ROOT");
   return {
     mode,
     host: get("QBRIDGE_HOST", "127.0.0.1"),
@@ -38,12 +44,18 @@ export function loadConfig(env = process.env, cwd = process.cwd()) {
     httpAccessToken: get("ONEBOT_HTTP_ACCESS_TOKEN", get("ONEBOT_ACCESS_TOKEN")) || get("ONEBOT_ACCESS_TOKEN"),
     httpSecret: get("ONEBOT_HTTP_SECRET"),
     selfId: get("ONEBOT_SELF_ID") ? id(get("ONEBOT_SELF_ID"), "ONEBOT_SELF_ID") : "",
-    groupMentionOnly: bool(values.QBRIDGE_GROUP_MENTION_ONLY, "QBRIDGE_GROUP_MENTION_ONLY"),
+    groupMentionOnly: bool(values.QBRIDGE_GROUP_MENTION_ONLY, "QBRIDGE_GROUP_MENTION_ONLY", true),
+    groupContextLimit: integer(get("QBRIDGE_GROUP_CONTEXT_LIMIT", "20"), "QBRIDGE_GROUP_CONTEXT_LIMIT", 0, 100),
     allowedUsers: list("QBRIDGE_ALLOWED_USERS"),
     allowedGroups: list("QBRIDGE_ALLOWED_GROUPS"),
     apiTimeoutMs: integer(get("QBRIDGE_API_TIMEOUT_MS", "15000"), "QBRIDGE_API_TIMEOUT_MS", 100, 60000),
     maxHistory: integer(get("QBRIDGE_MAX_HISTORY", "10000"), "QBRIDGE_MAX_HISTORY", 1, 1000000),
     maxMediaBytes: integer(get("QBRIDGE_MAX_MEDIA_BYTES", "10485760"), "QBRIDGE_MAX_MEDIA_BYTES", 1, 52428800),
+    imageAllowedHosts: new Set(imageHosts),
+    imageAllowPrivateNetwork: bool(values.QBRIDGE_IMAGE_ALLOW_PRIVATE_NETWORK, "QBRIDGE_IMAGE_ALLOW_PRIVATE_NETWORK"),
+    imageTimeoutMs: integer(get("QBRIDGE_IMAGE_TIMEOUT_MS", "15000"), "QBRIDGE_IMAGE_TIMEOUT_MS", 100, 60000),
+    imageLocalRoot: imageLocalRoot ? resolve(cwd, imageLocalRoot) : "",
+    onebotImageLocalRoot: get("ONEBOT_IMAGE_LOCAL_ROOT") || (imageLocalRoot ? resolve(cwd, imageLocalRoot) : ""),
   };
 }
 
