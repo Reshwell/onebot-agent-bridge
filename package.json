@@ -1,0 +1,26 @@
+{
+  "name": "onebot-agent-bridge",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Persistent OneBot v11 QQ bridge with CLI and stdio MCP tools",
+  "license": "MIT",
+  "engines": { "node": ">=24" },
+  "bin": {
+    "qbridge": "src/cli.js",
+    "qbridge-mcp": "src/mcp.js"
+  },
+  "scripts": {
+    "start": "node src/cli.js serve",
+    "mcp": "node src/mcp.js",
+    "test": "node --test test/*.test.js",
+    "check": "node --check src/cli.js && node --check src/mcp.js",
+    "pack:dry-run": "npm pack --dry-run"
+  },
+  "files": ["src", "README.md", "docs", "examples", "Dockerfile", "compose.yaml", ".env.example", "LICENSE"],
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.32.1",
+    "ws": "8.22.0",
+    "zod": "4.6.7"
+  }
+}

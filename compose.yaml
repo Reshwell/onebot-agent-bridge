@@ -1,0 +1,22 @@
+services:
+  qbridge:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      QBRIDGE_HOST: 0.0.0.0
+      QBRIDGE_PORT: 8787
+      QBRIDGE_STATE_DIR: /app/data
+      QBRIDGE_FILE_ROOT: /shared
+      ONEBOT_FILE_ROOT: /shared
+    ports:
+      - "127.0.0.1:8787:8787"
+    volumes:
+      - bridge-data:/app/data
+      - ./shared:/shared:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    init: true
+
+volumes:
+  bridge-data:

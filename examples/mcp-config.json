@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "qq-bridge": {
+      "command": "node",
+      "args": ["/absolute/path/to/onebot-agent-bridge/src/mcp.js"],
+      "env": {
+        "QBRIDGE_URL": "http://127.0.0.1:8787",
+        "QBRIDGE_TOKEN": "your-own-random-bridge-token"
+      }
+    }
+  }
+}
